@@ -119,9 +119,14 @@
 
     XCTAssert(error ==  nil);
     XCTAssert([splitBundles count] >= [app.testBundles count]);
-    for (BPXCTestFile *bundle in splitBundles) {
-        XCTAssert([bundle.estimatedExecutionTime doubleValue] <= optimalBundleTime);
-    }
+    [splitBundles enumerateObjectsUsingBlock:^(BPXCTestFile *bundle, NSUInteger idx, BOOL *stop) {
+        if (idx == 0) {
+            // One bundle is allowed to take the remainder of tests if it's less than a full optimalBuildTime worth of tests
+            XCTAssertLessThanOrEqual([bundle.estimatedExecutionTime doubleValue], optimalBundleTime * 2.0, @"%@", bundle);
+        } else {
+            XCTAssertLessThanOrEqual([bundle.estimatedExecutionTime doubleValue], optimalBundleTime, @"%@", bundle);
+        }
+    }];
 }
 
 - (void)testSmartPackIfJsonMissing {

@@ -104,6 +104,38 @@
     return bundles;
 }
 
++ (NSUInteger)iterateBundleTestsToRunForSplit:(NSArray *)bundleTestsToRun
+                                withTestTimes:(NSDictionary<NSString *, NSNumber *> *)testTimes
+                            optimalBundleTime:(double)optimalBundleTime
+                                   startIndex:(int)startIndex
+                                     outIndex:(int *)outIndex
+                                  outExecTime:(double *)outExecTime
+                       outDidSaturateExecTime:(BOOL *)outDidSaturateExecTime
+{
+    int i = startIndex;
+    int bundleTestsToRunCount = (int)[bundleTestsToRun count];
+    double execTime = 0.0;
+    BOOL didSaturateExecTime = NO;
+    while (execTime < optimalBundleTime && i < bundleTestsToRunCount) {
+        NSString *test = [bundleTestsToRun objectAtIndex:i];
+        if ([testTimes objectForKey:test]) {
+            double testTime = [testTimes[test] doubleValue];
+            if (execTime + testTime <= optimalBundleTime) {
+                execTime += testTime;
+            } else {
+                didSaturateExecTime = YES;
+                i++;
+                break;
+            }
+        }
+        i++;
+    }
+    *outIndex = i;
+    *outExecTime = execTime;
+    *outDidSaturateExecTime = didSaturateExecTime;
+    return i - startIndex;
+}
+
 /*!
  * @discussion Ideally each test bundle should not take more than totalTime/numSims, so split bundles which take longer.
  * @param config The configuration file for this bluepill-runner
@@ -138,29 +170,44 @@
             continue;
         }
         for (int i = 0; i < [bundleTestsToRun count];) {
-            double splitExecTime = 0.0;
-            NSUInteger startIndex = i;
-            while(splitExecTime < optimalBundleTime && i < [bundleTestsToRun count]) {
-                NSString *test = [bundleTestsToRun objectAtIndex:i];
-                if ([testTimes objectForKey:test]) {
-                    if (splitExecTime + [testTimes[test] doubleValue] <= optimalBundleTime) {
-                        splitExecTime += [testTimes[test] doubleValue];
-                    } else {
-                        if ([bundles count] == [[config numSims] integerValue] - 1) {
-                            // Put all of the remaining tests into the last bundle
-                            i = (int)[bundleTestsToRun count];
-                        }
-                        break;
-                    }
+            double execTime;
+            int startIndex = i;
+            BOOL didSaturateExecTime;
+            NSUInteger numTests = [self iterateBundleTestsToRunForSplit:bundleTestsToRun
+                                                          withTestTimes:testTimes
+                                                      optimalBundleTime:optimalBundleTime
+                                                             startIndex:startIndex
+                                                               outIndex:&i
+                                                            outExecTime:&execTime
+                                                 outDidSaturateExecTime:&didSaturateExecTime];
+            // If we saturated (estimate exceeded optimalBundleTime) and we're on what should
+            // be the last bundle, see if the remaining tests are less than a full
+            // optimalBundleTime worth of work and if they are, tack them on to this bundle
+            // instead of making a new one
+            if (didSaturateExecTime && [bundles count] == [[config numSims] integerValue] - 1) {
+                double additionalExecTime;
+                int additionalStartIndex = i;
+                didSaturateExecTime = NO;
+                NSUInteger additionalTests = [self iterateBundleTestsToRunForSplit:bundleTestsToRun
+                                                                     withTestTimes:testTimes
+                                                                 optimalBundleTime:optimalBundleTime
+                                                                        startIndex:additionalStartIndex
+                                                                          outIndex:&i
+                                                                       outExecTime:&additionalExecTime
+                                                            outDidSaturateExecTime:&didSaturateExecTime];
+                if (!didSaturateExecTime) {
+                    execTime += additionalExecTime;
+                    numTests += additionalTests;
+                } else {
+                    i = additionalStartIndex;
                 }
-                i++;
             }
             // Make a bundle out of current xctFile
-            BPXCTestFile *bundle = [self makeBundle:xctFile withTests:bundleTestsToRun startAt:startIndex numTests:(i-startIndex) estimatedTime:[NSNumber numberWithDouble:splitExecTime]];
+            BPXCTestFile *bundle = [self makeBundle:xctFile withTests:bundleTestsToRun startAt:startIndex numTests:numTests estimatedTime:[NSNumber numberWithDouble:execTime]];
             [bundles addObject:bundle];
         }
     }
-    [BPUtils printInfo:INFO withString:@"Splitted %lu bundles into %lu bundles.", [xcTestFiles count], [bundles count]];
+    [BPUtils printInfo:INFO withString:@"Split %lu bundles into %lu bundles.", [xcTestFiles count], [bundles count]];
 
     return bundles;
 }
